@@ -1,7 +1,7 @@
 import fs from "fs"
 import path from "path"
 import os from "os"
-import { exec as execCb, execSync } from "child_process"
+import { execSync, exec as execCb } from "child_process"
 import { styleText, promisify } from "util"
 import {
   readPluginsJson,
@@ -26,39 +26,15 @@ const INTERNAL_EXPORTS = new Set(["manifest", "default"])
 
 const execAsync = promisify(execCb)
 
-async function cloneWithSubdirAsync({ url, ref, subdir, pluginDir }) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "quartz-plugin-"))
-  try {
-    if (ref) {
-      await execAsync(`git clone --depth 1 --branch ${ref} "${url}" "${tmpDir}"`)
-    } else {
-      await execAsync(`git clone --depth 1 "${url}" "${tmpDir}"`)
-    }
-    const subdirPath = path.join(tmpDir, subdir)
-    if (!fs.existsSync(subdirPath)) {
-      throw new Error(`Subdirectory "${subdir}" not found in cloned repository`)
-    }
-    fs.cpSync(subdirPath, pluginDir, { recursive: true })
-    const { stdout } = await execAsync("git rev-parse HEAD", { cwd: tmpDir })
-    return stdout.trim()
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  }
-}
-
-async function buildPluginAsync(pluginDir, name) {
-  if (hasPrebuiltDist(pluginDir)) {
-    console.log(styleText("green", `  ✓ ${name}: using pre-built dist/`))
-    linkPeerPlugins(pluginDir)
-    return true
-  }
-
+function buildPlugin(pluginDir, name) {
   try {
     const skipBuild = !needsBuild(pluginDir)
     console.log(styleText("cyan", `  → ${name}: installing dependencies...`))
-    execSync("npm install", { cwd: pluginDir, stdio: "ignore" })
-    console.log(styleText("cyan", `  → ${name}: building...`))
-    execSync("npm run build", { cwd: pluginDir, stdio: "ignore" })
+    execSync("npm install --ignore-scripts", { cwd: pluginDir, stdio: "ignore" })
+    if (!skipBuild) {
+      console.log(styleText("cyan", `  → ${name}: building...`))
+      execSync("npm run build", { cwd: pluginDir, stdio: "ignore" })
+    }
     // Remove devDependencies after build — they are no longer needed and their
     // presence can cause duplicate-singleton issues when a plugin ships its own
     // copy of a shared dependency (e.g. bases-page's ViewRegistry).
@@ -66,6 +42,24 @@ async function buildPluginAsync(pluginDir, name) {
     // Symlink peerDependencies: @quartz-community/* peers resolve to sibling
     // plugins, all other peers resolve to the host Quartz node_modules so that
     // plugins share a single copy of packages like unified, vfile, etc.
+    linkPeerPlugins(pluginDir)
+    return true
+  } catch (error) {
+    console.log(styleText("red", `  ✗ ${name}: build failed`))
+    return false
+  }
+}
+
+async function buildPluginAsync(pluginDir, name) {
+  try {
+    const skipBuild = !needsBuild(pluginDir)
+    console.log(styleText("cyan", `  → ${name}: installing dependencies...`))
+    await execAsync("npm install --ignore-scripts", { cwd: pluginDir })
+    if (!skipBuild) {
+      console.log(styleText("cyan", `  → ${name}: building...`))
+      await execAsync("npm run build", { cwd: pluginDir })
+    }
+    await execAsync("npm prune --omit=dev", { cwd: pluginDir })
     linkPeerPlugins(pluginDir)
     return true
   } catch (error) {
@@ -95,27 +89,6 @@ async function runParallel(items, concurrency, fn) {
   const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
   await Promise.all(workers)
   return results
-}
-
-/**
- * Check whether a plugin's .gitignore excludes dist/.
- * When dist/ is gitignored, the plugin cannot ship pre-built output in version
- * control (e.g. because it uses tree-shaking) and must always be built locally.
- */
-function isDistGitignored(pluginDir) {
-  const gitignorePath = path.join(pluginDir, ".gitignore")
-  if (!fs.existsSync(gitignorePath)) return false
-
-  const lines = fs.readFileSync(gitignorePath, "utf-8").split("\n")
-  return lines.some((line) => {
-    const trimmed = line.trim()
-    return trimmed === "dist" || trimmed === "dist/" || trimmed === "/dist" || trimmed === "/dist/"
-  })
-}
-
-function hasPrebuiltDist(pluginDir) {
-  const distDir = path.join(pluginDir, "dist")
-  return fs.existsSync(distDir) && !isDistGitignored(pluginDir)
 }
 
 function needsBuild(pluginDir) {
@@ -1140,17 +1113,14 @@ export async function handlePluginInstallUnified({
   if (pluginsToBuild.length > 0) {
     console.log()
     console.log(styleText("cyan", "→ Building plugins..."))
-    const concurrency = resolvedConcurrency
+    const concurrency = Math.max(1, os.cpus().length)
     const results = await runParallel(pluginsToBuild, concurrency, async ({ name, pluginDir }) => {
       const ok = await buildPluginAsync(pluginDir, name)
       if (ok) console.log(styleText("green", `  ✓ ${name} built`))
       return ok
     })
     for (const ok of results) {
-      if (!ok) {
-        failed++
-        installed--
-      }
+      if (!ok) { failed++; installed-- }
     }
   }
 
@@ -1307,7 +1277,7 @@ export async function handlePluginAdd(
   if (addedPlugins.length > 0) {
     console.log()
     console.log(styleText("cyan", "→ Building plugins..."))
-    const concurrency = resolvedConcurrency
+    const concurrency = Math.max(1, os.cpus().length)
     await runParallel(addedPlugins, concurrency, async ({ name, pluginDir }) => {
       const ok = await buildPluginAsync(pluginDir, name)
       if (ok) console.log(styleText("green", `  ✓ ${name} built`))
@@ -1509,7 +1479,76 @@ export async function handlePluginCheck() {
 }
 
 export async function handlePluginUpdate(names) {
-  return handlePluginInstallUnified({ names, latest: true })
+  const lockfile = readLockfile()
+  if (!lockfile) {
+    console.log(styleText("yellow", "⚠ No plugins installed"))
+    return
+  }
+
+  const pluginsToUpdate = names || Object.keys(lockfile.plugins)
+  const updatedPlugins = []
+
+  for (const name of pluginsToUpdate) {
+    const entry = lockfile.plugins[name]
+    if (!entry) {
+      console.log(styleText("yellow", `⚠ ${name} is not installed`))
+      continue
+    }
+
+    const pluginDir = path.join(PLUGINS_DIR, name)
+    if (!fs.existsSync(pluginDir)) {
+      console.log(
+        styleText("yellow", `⚠ ${name} directory missing. Run 'npx quartz plugin install'.`),
+      )
+      continue
+    }
+
+    // Local plugins: just rebuild, no git operations
+    if (entry.commit === "local") {
+      console.log(styleText("cyan", `→ Rebuilding local plugin ${name}...`))
+      updatedPlugins.push({ name, pluginDir })
+      continue
+    }
+
+    try {
+      console.log(styleText("cyan", `→ Updating ${name}...`))
+      const fetchRef = entry.ref || ""
+      const resetTarget = entry.ref ? `origin/${entry.ref}` : "origin/HEAD"
+      execSync(`git fetch --depth 1 origin${fetchRef ? " " + fetchRef : ""}`, {
+        cwd: pluginDir,
+        stdio: "ignore",
+      })
+      execSync(`git reset --hard ${resetTarget}`, { cwd: pluginDir, stdio: "ignore" })
+
+      const newCommit = getGitCommit(pluginDir)
+      if (newCommit !== entry.commit) {
+        entry.commit = newCommit
+        entry.installedAt = new Date().toISOString()
+        updatedPlugins.push({ name, pluginDir })
+        console.log(styleText("green", `✓ Updated ${name} to ${newCommit.slice(0, 7)}`))
+      } else {
+        console.log(styleText("gray", `✓ ${name} already up to date`))
+      }
+    } catch (error) {
+      console.log(styleText("red", `✗ Failed to update ${name}: ${error}`))
+    }
+  }
+
+  if (updatedPlugins.length > 0) {
+    console.log()
+    console.log(styleText("cyan", "→ Rebuilding updated plugins..."))
+    const concurrency = Math.max(1, os.cpus().length)
+    await runParallel(updatedPlugins, concurrency, async ({ name, pluginDir }) => {
+      const ok = await buildPluginAsync(pluginDir, name)
+      if (ok) console.log(styleText("green", `  ✓ ${name} rebuilt`))
+      return ok
+    })
+    await regeneratePluginIndex()
+  }
+
+  writeLockfile(lockfile)
+  console.log()
+  console.log(styleText("gray", "Updated quartz.lock.json"))
 }
 
 export async function handlePluginList() {
@@ -1648,10 +1687,15 @@ export async function handlePluginStatus() {
   if (isTTY) {
     console.log(styleText("bold", "Installed Plugins:"))
     console.log()
-    for (const row of rows) {
-      const display =
-        row.entry.commit === "local" ? updateDisplay("local") : updateDisplay("checking")
-      console.log(formatRow(row, display.label, display.text))
+    console.log(styleText("cyan", "→ Building restored plugins..."))
+    const concurrency = Math.max(1, os.cpus().length)
+    const results = await runParallel(restoredPlugins, concurrency, async ({ name, pluginDir }) => {
+      const ok = await buildPluginAsync(pluginDir, name)
+      if (ok) console.log(styleText("green", `  ✓ ${name} built`))
+      return ok
+    })
+    for (const ok of results) {
+      if (!ok) { failed++; installed-- }
     }
   }
 
@@ -1773,5 +1817,154 @@ export async function handlePluginPrune({ dryRun = false } = {}) {
 }
 
 export async function handlePluginResolve({ dryRun = false } = {}) {
-  return handlePluginInstallUnified({ fromConfig: true, dryRun })
+  const pluginsJson = readPluginsJson()
+  if (!pluginsJson?.plugins || pluginsJson.plugins.length === 0) {
+    console.log(styleText("gray", "No plugins configured"))
+    return
+  }
+
+  let lockfile = readLockfile()
+  if (!lockfile) {
+    lockfile = { version: "1.0.0", plugins: {} }
+  }
+
+  if (!fs.existsSync(PLUGINS_DIR)) {
+    fs.mkdirSync(PLUGINS_DIR, { recursive: true })
+  }
+
+  // Find config entries whose source is a git/local-resolvable URL and not yet in lockfile
+  const missing = pluginsJson.plugins.filter((entry) => {
+    const name = extractPluginName(entry.source)
+    if (lockfile.plugins[name]) return false
+    // Only attempt sources that parseGitSource can handle (git URLs + local paths)
+    const src = entry.source
+    return (
+      src.startsWith("github:") ||
+      src.startsWith("git+") ||
+      src.startsWith("https://") ||
+      isLocalSource(src)
+    )
+  })
+
+  if (missing.length === 0) {
+    console.log(styleText("green", "✓ All configured plugins are already installed"))
+    return
+  }
+
+  console.log(`Found ${missing.length} uninstalled plugin(s) in config:\n`)
+  for (const entry of missing) {
+    const name = extractPluginName(entry.source)
+    console.log(`  ${styleText("yellow", name)} — ${entry.source}`)
+  }
+  console.log()
+
+  if (dryRun) {
+    console.log(
+      styleText("cyan", "Dry run — no changes made. Re-run without --dry-run to resolve."),
+    )
+    return
+  }
+
+  const installed = []
+  let failed = 0
+
+  for (const entry of missing) {
+    try {
+      const { name, url, ref, local } = parseGitSource(entry.source)
+      const pluginDir = path.join(PLUGINS_DIR, name)
+
+      if (fs.existsSync(pluginDir)) {
+        if (local) {
+          console.log(styleText("yellow", `⚠ ${name} directory already exists, updating lockfile`))
+          lockfile.plugins[name] = {
+            source: entry.source,
+            resolved: url,
+            commit: "local",
+            installedAt: new Date().toISOString(),
+          }
+          installed.push({ name, pluginDir })
+          continue
+        }
+        console.log(styleText("yellow", `⚠ ${name} directory already exists, updating lockfile`))
+        const commit = getGitCommit(pluginDir)
+        lockfile.plugins[name] = {
+          source: entry.source,
+          resolved: url,
+          commit,
+          ...(ref && { ref }),
+          installedAt: new Date().toISOString(),
+        }
+        installed.push({ name, pluginDir })
+        continue
+      }
+
+      if (local) {
+        // Local path: symlink
+        const resolvedPath = path.resolve(url)
+        if (!fs.existsSync(resolvedPath)) {
+          console.log(styleText("red", `✗ Local path does not exist: ${resolvedPath}`))
+          failed++
+          continue
+        }
+        console.log(styleText("cyan", `→ Linking ${name} from ${resolvedPath}...`))
+        fs.mkdirSync(path.dirname(pluginDir), { recursive: true })
+        fs.symlinkSync(resolvedPath, pluginDir, "dir")
+        lockfile.plugins[name] = {
+          source: entry.source,
+          resolved: resolvedPath,
+          commit: "local",
+          installedAt: new Date().toISOString(),
+        }
+        installed.push({ name, pluginDir })
+        console.log(styleText("green", `✓ Linked ${name} (local)`))
+      } else {
+        console.log(styleText("cyan", `→ Cloning ${name} from ${url}...`))
+
+        if (ref) {
+          execSync(`git clone --depth 1 --branch ${ref} ${url} ${pluginDir}`, { stdio: "ignore" })
+        } else {
+          execSync(`git clone --depth 1 ${url} ${pluginDir}`, { stdio: "ignore" })
+        }
+
+        const commit = getGitCommit(pluginDir)
+        lockfile.plugins[name] = {
+          source: entry.source,
+          resolved: url,
+          commit,
+          ...(ref && { ref }),
+          installedAt: new Date().toISOString(),
+        }
+
+        installed.push({ name, pluginDir })
+        console.log(styleText("green", `✓ Cloned ${name}@${commit.slice(0, 7)}`))
+      }
+    } catch (error) {
+      console.log(styleText("red", `✗ Failed to resolve ${entry.source}: ${error}`))
+      failed++
+    }
+  }
+
+  if (installed.length > 0) {
+    console.log()
+    console.log(styleText("cyan", "→ Building plugins..."))
+    const concurrency = Math.max(1, os.cpus().length)
+    const results = await runParallel(installed, concurrency, async ({ name, pluginDir }) => {
+      const ok = await buildPluginAsync(pluginDir, name)
+      if (ok) console.log(styleText("green", `  ✓ ${name} built`))
+      return ok
+    })
+    for (const ok of results) {
+      if (!ok) failed++
+    }
+    await regeneratePluginIndex()
+  }
+
+  writeLockfile(lockfile)
+  console.log()
+  if (failed === 0) {
+    console.log(styleText("green", `✓ Resolved ${installed.length} plugin(s)`))
+  } else {
+    console.log(styleText("yellow", `⚠ Resolved ${installed.length} plugin(s), ${failed} failed`))
+  }
+  console.log(styleText("gray", "Updated quartz.lock.json"))
 }
