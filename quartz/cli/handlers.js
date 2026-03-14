@@ -415,10 +415,8 @@ export async function handleBuild(argv) {
     }
 
     const result = await ctx.rebuild().catch((err) => {
-      console.error(
-        `${styleText("red", "Failed to build Quartz.")} Check for syntax errors in your configuration or plugins.`,
-      )
-      console.log(`Reason: ${styleText("gray", err.message ?? String(err))}`)
+      console.error(`${styleText("red", "Couldn't parse Quartz configuration:")} ${fp}`)
+      console.log(`Reason: ${styleText("grey", err.message ?? String(err))}`)
       process.exit(1)
     })
     release()
