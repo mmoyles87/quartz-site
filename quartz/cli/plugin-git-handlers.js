@@ -56,12 +56,16 @@ async function buildPluginAsync(pluginDir, name) {
   try {
     const skipBuild = !needsBuild(pluginDir)
     console.log(styleText("cyan", `  → ${name}: installing dependencies...`))
-    await execAsync("npm install --ignore-scripts", { cwd: pluginDir })
-    if (!skipBuild) {
-      console.log(styleText("cyan", `  → ${name}: building...`))
-      await execAsync("npm run build", { cwd: pluginDir })
-    }
-    await execAsync("npm prune --omit=dev", { cwd: pluginDir })
+    execSync("npm install", { cwd: pluginDir, stdio: "ignore" })
+    console.log(styleText("cyan", `  → ${name}: building...`))
+    execSync("npm run build", { cwd: pluginDir, stdio: "ignore" })
+    // Remove devDependencies after build — they are no longer needed and their
+    // presence can cause duplicate-singleton issues when a plugin ships its own
+    // copy of a shared dependency (e.g. bases-page's ViewRegistry).
+    execSync("npm prune --omit=dev", { cwd: pluginDir, stdio: "ignore" })
+    // Symlink peerDependencies: @quartz-community/* peers resolve to sibling
+    // plugins, all other peers resolve to the host Quartz node_modules so that
+    // plugins share a single copy of packages like unified, vfile, etc.
     linkPeerPlugins(pluginDir)
     return true
   } catch (error) {
@@ -139,13 +143,16 @@ function linkPeerPlugins(pluginDir) {
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"))
   const peers = pkg.peerDependencies ?? {}
 
+  // Locate the host Quartz node_modules (two levels up from .quartz/plugins/<name>)
   const quartzRoot = path.resolve(pluginDir, "..", "..", "..")
   const hostNodeModules = path.join(quartzRoot, "node_modules")
 
   for (const peerName of Object.keys(peers)) {
+    // Check if this peer is already satisfied (e.g. installed as a regular dep)
     const peerNodeModulesPath = path.join(pluginDir, "node_modules", ...peerName.split("/"))
     if (fs.existsSync(peerNodeModulesPath)) continue
 
+    // Case 1: @quartz-community scoped packages → sibling plugin symlink
     if (peerName.startsWith("@quartz-community/")) {
       const siblingPlugin = findPluginByPackageName(peerName)
       if (!siblingPlugin) continue
@@ -154,13 +161,15 @@ function linkPeerPlugins(pluginDir) {
       fs.mkdirSync(scopeDir, { recursive: true })
 
       const target = path.relative(scopeDir, siblingPlugin)
-      trySymlink(target, peerNodeModulesPath)
+      fs.symlinkSync(target, peerNodeModulesPath, "dir")
       continue
     }
 
+    // Case 2: Other peers → resolve from host Quartz node_modules
     const hostPeerPath = path.join(hostNodeModules, ...peerName.split("/"))
     if (!fs.existsSync(hostPeerPath)) continue
 
+    // Ensure parent directory exists (for scoped packages like @napi-rs/simple-git)
     const parts = peerName.split("/")
     if (parts.length > 1) {
       const scopeDir = path.join(pluginDir, "node_modules", parts[0])
@@ -170,7 +179,7 @@ function linkPeerPlugins(pluginDir) {
     }
 
     const target = path.relative(path.dirname(peerNodeModulesPath), hostPeerPath)
-    trySymlink(target, peerNodeModulesPath)
+    fs.symlinkSync(target, peerNodeModulesPath, "dir")
   }
 }
 
