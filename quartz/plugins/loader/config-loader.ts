@@ -266,9 +266,6 @@ export async function loadQuartzConfig(
   for (const entry of enabledEntries) {
     try {
       const gitSpec = parsePluginSource(entry.source)
-      if (gitSpec.npmPackage) {
-        continue
-      }
       const result = await installPlugin(gitSpec, { verbose: false })
       if (result.nativeDeps.size > 0) {
         allNativeDeps.set(gitSpec.name, result.nativeDeps)
@@ -276,7 +273,7 @@ export async function loadQuartzConfig(
     } catch (err) {
       console.error(
         styleText("red", `✗`) +
-          ` Failed to install plugin: ${styleText("yellow", formatSourceDisplay(entry.source))}\n` +
+          ` Failed to install plugin: ${styleText("yellow", entry.source)}\n` +
           `  ${err instanceof Error ? err.message : String(err)}`,
       )
     }
@@ -291,12 +288,12 @@ export async function loadQuartzConfig(
     try {
       const manifest = await getManifest(entry.source)
       if (manifest) {
-        manifests.set(sourceKey(entry.source), manifest)
+        manifests.set(entry.source, manifest)
       }
     } catch (err) {
       console.error(
         styleText("red", `✗`) +
-          ` Failed to load manifest: ${styleText("yellow", formatSourceDisplay(entry.source))}\n` +
+          ` Failed to load manifest: ${styleText("yellow", entry.source)}\n` +
           `  ${err instanceof Error ? err.message : String(err)}`,
       )
     }
