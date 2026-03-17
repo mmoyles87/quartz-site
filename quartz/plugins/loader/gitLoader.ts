@@ -161,6 +161,36 @@ function extractRepoName(url: string): string {
   return match ? match[1] : "unknown"
 }
 
+async function installPluginDepsIfNeeded(
+  pluginDir: string,
+  pluginName: string,
+  options: { verbose?: boolean },
+): Promise<void> {
+  const pkgPath = path.join(pluginDir, "package.json")
+  if (!fs.existsSync(pkgPath)) return
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"))
+    const manifest = pkg.quartz ?? pkg.manifest ?? {}
+    if (!manifest.requiresInstall) return
+
+    if (options.verbose) {
+      console.log(styleText("cyan", `→`), `Installing native dependencies for ${pluginName}...`)
+    }
+
+    execSync("npm install --omit=dev --ignore-scripts=false", {
+      cwd: pluginDir,
+      stdio: options.verbose ? "inherit" : "pipe",
+      timeout: 60_000,
+    })
+  } catch {
+    console.warn(
+      styleText("yellow", `⚠`),
+      `Failed to install dependencies for ${pluginName}. Native features may not work.`,
+    )
+  }
+}
+
 /**
  * Collect native (peer) dependencies from a plugin that declares requiresInstall.
  */
@@ -546,6 +576,8 @@ export async function installPlugin(
 
   buildInstalledPlugin(pluginDir, spec.name, options.verbose)
 
+  await installPluginDepsIfNeeded(pluginDir, spec.name, options)
+
   if (options.verbose) {
     console.log(styleText("green", `✓`), `Installed ${spec.name}`)
   }
@@ -795,52 +827,74 @@ const NODE_BUILTINS = new Set([
   "zlib",
 ])
 
-/**
- * Packages that must be the same JavaScript module instance at runtime across
- * all plugins and the host. These are true singletons — duplicating them causes
- * broken identity checks (e.g. `instanceof`, shared registries).
- *
- * This list should be kept small and explicit. Only add packages here when
- * multiple copies at runtime would cause correctness issues.
- */
-const SINGLETON_EXTERNALS = ["preact", "@jackyzha0/quartz", "vfile", "unified"]
+const SHARED_EXTERNALS = ["@quartz-community/", "preact", "@jackyzha0/quartz", "vfile"]
 
-/**
- * Scope prefixes whose packages are always treated as shared externals.
- * Plugins under these scopes are co-installed siblings, not bundled deps.
- */
-const SHARED_SCOPES = ["@quartz-community/", "@quartz-themes/"]
+function isAllowedExternal(specifier: string, pluginPeerDeps: string[]): boolean {
+  if (specifier.startsWith("node:")) return true
 
-/**
- * Build the full shared externals list by combining:
- *  1. Explicit singleton packages (must be same instance at runtime)
- *  2. Shared scope prefixes (@quartz-community/*)
- *  3. Auto-detected dependencies from Quartz's own package.json
- *
- * The auto-detection ensures that when Quartz adds a new dependency,
- * plugins that import it won't get false "unbundled external" warnings.
- */
-let _sharedExternalsCache: string[] | null = null
+  const bare = specifier.split("/")[0]
+  if (NODE_BUILTINS.has(bare)) return true
 
-export function getSharedExternals(): string[] {
-  if (_sharedExternalsCache) return _sharedExternalsCache
+  if (SHARED_EXTERNALS.some((prefix) => specifier.startsWith(prefix))) return true
 
-  const externals = [...SINGLETON_EXTERNALS, ...SHARED_SCOPES]
+  if (pluginPeerDeps.some((dep) => specifier === dep || specifier.startsWith(dep + "/"))) {
+    return true
+  }
 
-  // Auto-detect from Quartz's package.json
-  const quartzPkgPath = path.join(process.cwd(), "package.json")
-  if (fs.existsSync(quartzPkgPath)) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(quartzPkgPath, "utf-8"))
-      const deps = Object.keys(pkg.dependencies ?? {})
-      for (const dep of deps) {
-        if (!externals.includes(dep)) {
-          externals.push(dep)
-        }
+  return false
+}
+
+export function validatePluginExternals(
+  pluginName: string,
+  entryPoint: string,
+  options?: { verbose?: boolean },
+): string[] {
+  try {
+    const content = fs.readFileSync(entryPoint, "utf-8")
+
+    let peerDeps: string[] = []
+    const pluginDir = path.dirname(entryPoint).replace(/\/dist$/, "")
+    const pkgPath = path.join(pluginDir, "package.json")
+    if (fs.existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"))
+        peerDeps = Object.keys(pkg.peerDependencies ?? {})
+      } catch {
+        // ignore parse errors
       }
-    } catch {
-      // Fall back to explicit list only
     }
+
+    const importPattern =
+      /^\s*(?:import\s+.*\s+from|export\s+.*\s+from)\s+["']([^"'./][^"']*)["']/gm
+    const unexpected: string[] = []
+
+    for (const match of content.matchAll(importPattern)) {
+      const specifier = match[1]
+      if (!isAllowedExternal(specifier, peerDeps)) {
+        unexpected.push(specifier)
+      }
+    }
+
+    const unique = [...new Set(unexpected)]
+
+    if (unique.length > 0 && options?.verbose) {
+      console.warn(
+        styleText("yellow", `⚠`) +
+          ` Plugin ${styleText("cyan", pluginName)} has unbundled external imports that may fail at runtime:\n` +
+          unique.map((s) => `  - ${s}`).join("\n") +
+          `\n  These packages are not provided by Quartz. The plugin should bundle them into dist/.`,
+      )
+    }
+
+    return unique
+  } catch {
+    return []
+  }
+}
+
+export async function regeneratePluginIndex(options: { verbose?: boolean } = {}): Promise<void> {
+  if (!fs.existsSync(PLUGINS_CACHE_DIR)) {
+    return
   }
 
   _sharedExternalsCache = externals
