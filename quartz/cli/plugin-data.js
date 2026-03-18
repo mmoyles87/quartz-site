@@ -99,7 +99,7 @@ export function getSourceUrl(source) {
 /**
  * Returns the subdir from an object source, or undefined for string sources.
  */
-function getSourceSubdir(source) {
+export function getSourceSubdir(source) {
   if (typeof source === "object" && source !== null && typeof source.subdir === "string") {
     return source.subdir
   }
@@ -190,11 +190,6 @@ export function parseGitSource(source) {
       typeof source === "object" && source.name ? source.name : path.basename(parsed, ".git")
     return { name, url: parsed, ref, subdir }
   }
-  // Handle npm scoped packages
-  if (typeof url === "string" && url.startsWith("@") && url.includes("/") && !url.includes(":")) {
-    const name = typeof source === "object" && source.name ? source.name : url
-    return { name, url: "", npmPackage: true, subdir }
-  }
   throw new Error(`Cannot parse plugin source: ${formatSource(source)}`)
 }
 
@@ -204,6 +199,80 @@ export function getGitCommit(pluginDir) {
   } catch {
     return "unknown"
   }
+}
+
+export function getPluginDir(name) {
+  return path.join(PLUGINS_DIR, name)
+}
+
+export function pluginDirExists(name) {
+  return fs.existsSync(path.join(PLUGINS_DIR, name))
+}
+
+export function ensurePluginsDir() {
+  if (!fs.existsSync(PLUGINS_DIR)) {
+    fs.mkdirSync(PLUGINS_DIR, { recursive: true })
+  }
+}
+
+/**
+ * Merges quartz.config.yaml, quartz.lock.json, and on-disk manifest data
+ * into enriched plugin entries with: name, displayName, source, enabled,
+ * options, order, layout, category, installed, locked, manifest,
+ * currentCommit, modified.
+ */
+export function getEnrichedPlugins() {
+  const pluginsJson = readPluginsJson()
+  const lockfile = readLockfile()
+
+  if (!pluginsJson?.plugins) return []
+
+  return pluginsJson.plugins.map((entry, index) => {
+    const name = extractPluginName(entry.source)
+    const pluginDir = path.join(PLUGINS_DIR, name)
+    const installed = fs.existsSync(pluginDir)
+    const locked = lockfile?.plugins?.[name] ?? null
+    const manifest = installed ? readManifestFromPackageJson(pluginDir) : null
+    const currentCommit = installed ? getGitCommit(pluginDir) : null
+    const modified = locked && currentCommit ? currentCommit !== locked.commit : false
+
+    return {
+      index,
+      name,
+      displayName: manifest?.displayName ?? name,
+      source: entry.source,
+      sourceDisplay: formatSource(entry.source),
+      subdir: getSourceSubdir(entry.source) ?? locked?.subdir ?? undefined,
+      enabled: entry.enabled ?? true,
+      options: entry.options ?? {},
+      order: entry.order ?? 50,
+      layout: entry.layout ?? null,
+      category: manifest?.category ?? "unknown",
+      installed,
+      locked,
+      manifest,
+      currentCommit,
+      modified,
+    }
+  })
+}
+
+export function getLayoutConfig() {
+  const pluginsJson = readPluginsJson()
+  return pluginsJson?.layout ?? null
+}
+
+export function getGlobalConfig() {
+  const pluginsJson = readPluginsJson()
+  return pluginsJson?.configuration ?? null
+}
+
+export function updatePluginEntry(index, updates) {
+  const json = readPluginsJson()
+  if (!json?.plugins?.[index]) return false
+  Object.assign(json.plugins[index], updates)
+  writePluginsJson(json)
+  return true
 }
 
 export function updateGlobalConfig(updates) {

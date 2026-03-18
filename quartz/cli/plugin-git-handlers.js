@@ -17,14 +17,31 @@ import {
   isLocalSource,
   getSourceUrl,
   formatSource,
-  resolveLockfileName,
-  getNameOverrides,
 } from "./plugin-data.js"
 import { symlinkOrCopySync } from "./helpers.js"
 
 const INTERNAL_EXPORTS = new Set(["manifest", "default"])
 
 const execAsync = promisify(execCb)
+
+function cloneWithSubdir({ url, ref, subdir, pluginDir }) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "quartz-plugin-"))
+  try {
+    if (ref) {
+      execSync(`git clone --depth 1 --branch ${ref} "${url}" "${tmpDir}"`, { stdio: "ignore" })
+    } else {
+      execSync(`git clone --depth 1 "${url}" "${tmpDir}"`, { stdio: "ignore" })
+    }
+    const subdirPath = path.join(tmpDir, subdir)
+    if (!fs.existsSync(subdirPath)) {
+      throw new Error(`Subdirectory "${subdir}" not found in cloned repository`)
+    }
+    fs.cpSync(subdirPath, pluginDir, { recursive: true })
+    return getGitCommit(tmpDir)
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  }
+}
 
 function buildPlugin(pluginDir, name) {
   try {
@@ -1035,30 +1052,35 @@ export async function handlePluginInstallUnified({
     }
 
     if (fs.existsSync(pluginDir)) {
-      if (entry.subdir) {
-        if (!needsBuild(pluginDir)) {
-          console.log(
-            styleText("gray", `  ✓ ${name}@${entry.commit.slice(0, 7)} already installed (subdir)`),
-          )
-          installed++
-          continue
-        }
-        pluginsToBuild.push({ name, pluginDir })
-        installed++
-      } else {
-        const currentCommit = getGitCommit(pluginDir)
-        if (currentCommit === entry.commit && !needsBuild(pluginDir)) {
-          console.log(
-            styleText("gray", `  ✓ ${name}@${entry.commit.slice(0, 7)} already installed`),
-          )
-          installed++
-          continue
-        }
-        if (currentCommit !== entry.commit) {
-          gitEntries.push({ name, entry, pluginDir, action: "update" })
+      try {
+        if (entry.subdir) {
+          if (!needsBuild(pluginDir)) {
+            console.log(
+              styleText(
+                "gray",
+                `  ✓ ${name}@${entry.commit.slice(0, 7)} already installed (subdir)`,
+              ),
+            )
+            installed++
+            continue
+          }
         } else {
-          pluginsToBuild.push({ name, pluginDir })
-          installed++
+          const currentCommit = getGitCommit(pluginDir)
+          if (currentCommit === entry.commit && !needsBuild(pluginDir)) {
+            console.log(
+              styleText("gray", `  ✓ ${name}@${entry.commit.slice(0, 7)} already installed`),
+            )
+            installed++
+            continue
+          }
+          if (currentCommit !== entry.commit) {
+            console.log(
+              styleText("cyan", `  → ${name}: updating to ${entry.commit.slice(0, 7)}...`),
+            )
+            const fetchRef = entry.ref ? ` ${entry.ref}` : ""
+            execSync(`git fetch --depth 1 origin${fetchRef}`, { cwd: pluginDir, stdio: "ignore" })
+            execSync(`git reset --hard ${entry.commit}`, { cwd: pluginDir, stdio: "ignore" })
+          }
         }
       }
     } else {
@@ -1071,35 +1093,23 @@ export async function handlePluginInstallUnified({
     const concurrency = resolvedConcurrency
     await runParallel(gitEntries, concurrency, async ({ name, entry, pluginDir, action }) => {
       try {
-        if (action === "update") {
-          console.log(styleText("cyan", `  → ${name}: updating to ${entry.commit.slice(0, 7)}...`))
-          const fetchRef = entry.ref ? ` ${entry.ref}` : ""
-          await execAsync(`git fetch --depth 1 origin${fetchRef}`, { cwd: pluginDir })
-          await execAsync(`git reset --hard ${entry.commit}`, { cwd: pluginDir })
-          pluginsToBuild.push({ name, pluginDir })
-          installed++
+        if (entry.subdir) {
+          console.log(styleText("cyan", `  → ${name}: cloning (subdir: ${entry.subdir})...`))
+          fs.mkdirSync(path.dirname(pluginDir), { recursive: true })
+          cloneWithSubdir({ url: entry.resolved, ref: entry.ref, subdir: entry.subdir, pluginDir })
         } else {
-          if (entry.subdir) {
-            console.log(styleText("cyan", `  → ${name}: cloning (subdir: ${entry.subdir})...`))
-            fs.mkdirSync(path.dirname(pluginDir), { recursive: true })
-            await cloneWithSubdirAsync({
-              url: entry.resolved,
-              ref: entry.ref,
-              subdir: entry.subdir,
-              pluginDir,
+          console.log(styleText("cyan", `  → ${name}: cloning...`))
+          const branchArg = entry.ref ? ` --branch ${entry.ref}` : ""
+          execSync(`git clone --depth 1${branchArg} "${entry.resolved}" "${pluginDir}"`, {
+            stdio: "ignore",
+          })
+          if (entry.commit !== "unknown") {
+            execSync(`git fetch --depth 1 origin ${entry.commit}`, {
+              cwd: pluginDir,
+              stdio: "ignore",
             })
-          } else {
-            console.log(styleText("cyan", `  → ${name}: cloning...`))
-            const branchArg = entry.ref ? ` --branch ${entry.ref}` : ""
-            await execAsync(`git clone --depth 1${branchArg} "${entry.resolved}" "${pluginDir}"`)
-            if (entry.commit !== "unknown") {
-              await execAsync(`git fetch --depth 1 origin ${entry.commit}`, { cwd: pluginDir })
-              await execAsync(`git checkout ${entry.commit}`, { cwd: pluginDir })
-            }
+            execSync(`git checkout ${entry.commit}`, { cwd: pluginDir, stdio: "ignore" })
           }
-          console.log(styleText("green", `  ✓ ${name}@${entry.commit.slice(0, 7)}`))
-          pluginsToBuild.push({ name, pluginDir })
-          installed++
         }
       } catch {
         console.log(
@@ -1171,21 +1181,7 @@ export async function handlePluginAdd(
   const remoteSources = []
   for (const source of sources) {
     try {
-      const parsed = parseGitSource(source)
-      if (parsed.npmPackage) {
-        const name = nameOverride ?? parsed.name
-        console.log(styleText("cyan", `→ Installing ${name} from npm...`))
-        execSync(`npm install ${parsed.name}`, { cwd: process.cwd(), stdio: "inherit" })
-        const configSource = nameOverride ? { repo: parsed.name, name: nameOverride } : parsed.name
-        const pluginDir = path.join(process.cwd(), "node_modules", ...parsed.name.split("/"))
-        addedPlugins.push({ name, pluginDir, source: parsed.name, configSource })
-        continue
-      }
-      const name = nameOverride ?? parsed.name
-      const url = parsed.url
-      const ref = parsed.ref
-      const local = parsed.local
-      const subdir = subdirOverride ?? parsed.subdir
+      const { name, url, ref, local, subdir } = parseGitSource(source)
       const pluginDir = path.join(PLUGINS_DIR, name)
 
       let configSource = undefined
@@ -1219,6 +1215,20 @@ export async function handlePluginAdd(
         }
         addedPlugins.push({ name, pluginDir, source, configSource })
         console.log(styleText("green", `✓ Added ${name} (local symlink)`))
+      } else if (subdir) {
+        console.log(styleText("cyan", `→ Adding ${name} from ${url} (subdir: ${subdir})...`))
+        fs.mkdirSync(path.dirname(pluginDir), { recursive: true })
+        const commit = cloneWithSubdir({ url, ref, subdir, pluginDir })
+        lockfile.plugins[name] = {
+          source,
+          resolved: url,
+          commit,
+          ...(ref && { ref }),
+          subdir,
+          installedAt: new Date().toISOString(),
+        }
+        addedPlugins.push({ name, pluginDir, source })
+        console.log(styleText("green", `✓ Added ${name}@${commit.slice(0, 7)} (subdir: ${subdir})`))
       } else {
         remoteSources.push({ source, name, url, ref, subdir, pluginDir, configSource })
       }
@@ -1362,8 +1372,7 @@ export async function handlePluginRemove(names) {
     pluginsJson.plugins = pluginsJson.plugins.filter(
       (plugin) =>
         !names.includes(extractPluginName(plugin.source)) &&
-        !names.includes(formatSource(plugin.source)) &&
-        !resolvedNames.includes(extractPluginName(plugin.source)),
+        !names.includes(formatSource(plugin.source)),
     )
     writePluginsJson(pluginsJson)
   }
@@ -1515,22 +1524,47 @@ export async function handlePluginUpdate(names) {
 
     try {
       console.log(styleText("cyan", `→ Updating ${name}...`))
-      const fetchRef = entry.ref || ""
-      const resetTarget = entry.ref ? `origin/${entry.ref}` : "origin/HEAD"
-      execSync(`git fetch --depth 1 origin${fetchRef ? " " + fetchRef : ""}`, {
-        cwd: pluginDir,
-        stdio: "ignore",
-      })
-      execSync(`git reset --hard ${resetTarget}`, { cwd: pluginDir, stdio: "ignore" })
 
-      const newCommit = getGitCommit(pluginDir)
-      if (newCommit !== entry.commit) {
-        entry.commit = newCommit
-        entry.installedAt = new Date().toISOString()
-        updatedPlugins.push({ name, pluginDir })
-        console.log(styleText("green", `✓ Updated ${name} to ${newCommit.slice(0, 7)}`))
+      if (entry.subdir) {
+        fs.rmSync(pluginDir, { recursive: true })
+        fs.mkdirSync(path.dirname(pluginDir), { recursive: true })
+        const newCommit = cloneWithSubdir({
+          url: entry.resolved,
+          ref: entry.ref,
+          subdir: entry.subdir,
+          pluginDir,
+        })
+        if (newCommit !== entry.commit) {
+          entry.commit = newCommit
+          entry.installedAt = new Date().toISOString()
+          updatedPlugins.push({ name, pluginDir })
+          console.log(
+            styleText(
+              "green",
+              `✓ Updated ${name} to ${newCommit.slice(0, 7)} (subdir: ${entry.subdir})`,
+            ),
+          )
+        } else {
+          console.log(styleText("gray", `✓ ${name} already up to date`))
+        }
       } else {
-        console.log(styleText("gray", `✓ ${name} already up to date`))
+        const fetchRef = entry.ref || ""
+        const resetTarget = entry.ref ? `origin/${entry.ref}` : "origin/HEAD"
+        execSync(`git fetch --depth 1 origin${fetchRef ? " " + fetchRef : ""}`, {
+          cwd: pluginDir,
+          stdio: "ignore",
+        })
+        execSync(`git reset --hard ${resetTarget}`, { cwd: pluginDir, stdio: "ignore" })
+
+        const newCommit = getGitCommit(pluginDir)
+        if (newCommit !== entry.commit) {
+          entry.commit = newCommit
+          entry.installedAt = new Date().toISOString()
+          updatedPlugins.push({ name, pluginDir })
+          console.log(styleText("green", `✓ Updated ${name} to ${newCommit.slice(0, 7)}`))
+        } else {
+          console.log(styleText("gray", `✓ ${name} already up to date`))
+        }
       }
     } catch (error) {
       console.log(styleText("red", `✗ Failed to update ${name}: ${error}`))
@@ -1578,7 +1612,7 @@ export async function handlePluginList() {
     if (entry.commit === "local") {
       const isLinked = exists && fs.lstatSync(pluginDir).isSymbolicLink()
       const status = isLinked ? styleText("green", "✓") : styleText("red", "✗")
-      console.log(`  ${status} ${styleText("bold", displayLabel)}`)
+      console.log(`  ${status} ${styleText("bold", name)}`)
       console.log(`    Source: ${formatSource(entry.source)}`)
       console.log(`    Type: local symlink`)
       console.log(`    Target: ${entry.resolved}`)
@@ -1599,7 +1633,7 @@ export async function handlePluginList() {
         : styleText("yellow", "⚡")
       : styleText("red", "✗")
 
-    console.log(`  ${status} ${styleText("bold", displayLabel)}`)
+    console.log(`  ${status} ${styleText("bold", name)}`)
     console.log(`    Source: ${formatSource(entry.source)}`)
     console.log(`    Commit: ${entry.commit.slice(0, 7)}`)
     if (currentCommit !== entry.commit && exists) {
@@ -1662,18 +1696,64 @@ export async function handlePluginStatus() {
     )}${row.commitLabel.padEnd(commitWidth)}${enabledColumn}${updateColumn}`
   }
 
-  const updateDisplay = (status) => {
-    switch (status) {
-      case "local":
-        return { text: "— local", label: styleText("gray", "— local") }
-      case "up_to_date":
-        return { text: "✓ up to date", label: styleText("green", "✓ up to date") }
-      case "update_available":
-        return { text: "↑ update available", label: styleText("yellow", "↑ update available") }
-      case "failed":
-        return { text: "✗ check failed", label: styleText("red", "✗ check failed") }
-      default:
-        return { text: "⋯", label: styleText("cyan", "⋯") }
+  let installed = 0
+  let failed = 0
+  const restoredPlugins = []
+
+  for (const [name, entry] of Object.entries(lockfile.plugins)) {
+    const pluginDir = path.join(pluginsDir, name)
+
+    if (fs.existsSync(pluginDir)) {
+      console.log(styleText("yellow", `⚠ ${name}: directory exists, skipping`))
+      continue
+    }
+
+    // Local plugin: re-symlink
+    if (entry.commit === "local") {
+      try {
+        if (!fs.existsSync(entry.resolved)) {
+          console.log(styleText("red", `  ✗ ${name}: local path missing: ${entry.resolved}`))
+          failed++
+          continue
+        }
+        fs.mkdirSync(path.dirname(pluginDir), { recursive: true })
+        fs.symlinkSync(entry.resolved, pluginDir, "dir")
+        console.log(styleText("green", `✓ ${name} restored (local symlink)`))
+        restoredPlugins.push({ name, pluginDir })
+        installed++
+      } catch {
+        console.log(styleText("red", `✗ ${name}: failed to restore local symlink`))
+        failed++
+      }
+      continue
+    }
+
+    try {
+      if (entry.subdir) {
+        console.log(
+          styleText(
+            "cyan",
+            `→ ${name}: cloning ${entry.resolved}@${entry.commit.slice(0, 7)} (subdir: ${entry.subdir})...`,
+          ),
+        )
+        fs.mkdirSync(path.dirname(pluginDir), { recursive: true })
+        cloneWithSubdir({ url: entry.resolved, ref: entry.ref, subdir: entry.subdir, pluginDir })
+      } else {
+        console.log(
+          styleText("cyan", `→ ${name}: cloning ${entry.resolved}@${entry.commit.slice(0, 7)}...`),
+        )
+        const branchArg = entry.ref ? ` --branch ${entry.ref}` : ""
+        execSync(`git clone --depth 1${branchArg} "${entry.resolved}" "${pluginDir}"`, {
+          stdio: "ignore",
+        })
+        execSync(`git checkout ${entry.commit}`, { cwd: pluginDir, stdio: "ignore" })
+      }
+      console.log(styleText("green", `✓ ${name} restored`))
+      restoredPlugins.push({ name, pluginDir })
+      installed++
+    } catch {
+      console.log(styleText("red", `✗ ${name}: failed to restore`))
+      failed++
     }
   }
 
@@ -1841,9 +1921,9 @@ export async function handlePluginResolve({ dryRun = false } = {}) {
   // Find config entries whose source is a git/local-resolvable URL and not yet in lockfile
   const missing = pluginsJson.plugins.filter((entry) => {
     const name = extractPluginName(entry.source)
-    if (lockfile.plugins[name]) return false
-    // Only attempt sources that parseGitSource can handle (git URLs + local paths)
-    const src = entry.source
+    const pluginDir = path.join(PLUGINS_DIR, name)
+    if (lockfile.plugins[name] && fs.existsSync(pluginDir)) return false
+    const src = getSourceUrl(entry.source)
     return (
       src.startsWith("github:") ||
       src.startsWith("git+") ||
@@ -1860,7 +1940,7 @@ export async function handlePluginResolve({ dryRun = false } = {}) {
   console.log(`Found ${missing.length} uninstalled plugin(s) in config:\n`)
   for (const entry of missing) {
     const name = extractPluginName(entry.source)
-    console.log(`  ${styleText("yellow", name)} — ${entry.source}`)
+    console.log(`  ${styleText("yellow", name)} — ${formatSource(entry.source)}`)
   }
   console.log()
 
@@ -1876,7 +1956,7 @@ export async function handlePluginResolve({ dryRun = false } = {}) {
 
   for (const entry of missing) {
     try {
-      const { name, url, ref, local } = parseGitSource(entry.source)
+      const { name, url, ref, local, subdir } = parseGitSource(entry.source)
       const pluginDir = path.join(PLUGINS_DIR, name)
 
       if (fs.existsSync(pluginDir)) {
@@ -1886,6 +1966,7 @@ export async function handlePluginResolve({ dryRun = false } = {}) {
             source: entry.source,
             resolved: url,
             commit: "local",
+            ...(subdir && { subdir }),
             installedAt: new Date().toISOString(),
           }
           installed.push({ name, pluginDir })
@@ -1898,6 +1979,7 @@ export async function handlePluginResolve({ dryRun = false } = {}) {
           resolved: url,
           commit,
           ...(ref && { ref }),
+          ...(subdir && { subdir }),
           installedAt: new Date().toISOString(),
         }
         installed.push({ name, pluginDir })
@@ -1906,7 +1988,8 @@ export async function handlePluginResolve({ dryRun = false } = {}) {
 
       if (local) {
         // Local path: symlink
-        const resolvedPath = path.resolve(url)
+        let resolvedPath = path.resolve(url)
+        if (subdir) resolvedPath = path.join(resolvedPath, subdir)
         if (!fs.existsSync(resolvedPath)) {
           console.log(styleText("red", `✗ Local path does not exist: ${resolvedPath}`))
           failed++
@@ -1919,10 +2002,27 @@ export async function handlePluginResolve({ dryRun = false } = {}) {
           source: entry.source,
           resolved: resolvedPath,
           commit: "local",
+          ...(subdir && { subdir }),
           installedAt: new Date().toISOString(),
         }
         installed.push({ name, pluginDir })
         console.log(styleText("green", `✓ Linked ${name} (local)`))
+      } else if (subdir) {
+        console.log(styleText("cyan", `→ Cloning ${name} from ${url} (subdir: ${subdir})...`))
+        fs.mkdirSync(path.dirname(pluginDir), { recursive: true })
+        const commit = cloneWithSubdir({ url, ref, subdir, pluginDir })
+        lockfile.plugins[name] = {
+          source: entry.source,
+          resolved: url,
+          commit,
+          ...(ref && { ref }),
+          subdir,
+          installedAt: new Date().toISOString(),
+        }
+        installed.push({ name, pluginDir })
+        console.log(
+          styleText("green", `✓ Cloned ${name}@${commit.slice(0, 7)} (subdir: ${subdir})`),
+        )
       } else {
         console.log(styleText("cyan", `→ Cloning ${name} from ${url}...`))
 
@@ -1945,7 +2045,7 @@ export async function handlePluginResolve({ dryRun = false } = {}) {
         console.log(styleText("green", `✓ Cloned ${name}@${commit.slice(0, 7)}`))
       }
     } catch (error) {
-      console.log(styleText("red", `✗ Failed to resolve ${entry.source}: ${error}`))
+      console.log(styleText("red", `✗ Failed to resolve ${formatSource(entry.source)}: ${error}`))
       failed++
     }
   }
