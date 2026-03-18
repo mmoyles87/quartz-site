@@ -430,20 +430,14 @@ export async function loadQuartzConfig(
     const instances = []
     for (const { entry, manifest } of items) {
       try {
-        const spec = parsePluginSource(entry.source)
-        let module
-        if (spec.npmPackage) {
-          module = await import(spec.name)
-        } else {
-          const entryPoint = getPluginEntryPoint(spec.name)
-          module = await import(toFileUrl(entryPoint))
-        }
-        const pluginName = spec.npmPackage ? spec.name : spec.name
+        const gitSpec = parsePluginSource(entry.source)
+        const entryPoint = getPluginEntryPoint(gitSpec.name)
+        const module = await import(toFileUrl(entryPoint))
         if (manifest?.components && Object.keys(manifest.components).length > 0) {
-          await loadComponentsFromPackage(pluginName, manifest)
+          await loadComponentsFromPackage(gitSpec.name, manifest)
         }
         if (manifest?.frames && Object.keys(manifest.frames).length > 0) {
-          await loadFramesFromPackage(pluginName, manifest)
+          await loadFramesFromPackage(gitSpec.name, manifest)
         }
 
         const factory = findFactory(module, expectedCategory)
