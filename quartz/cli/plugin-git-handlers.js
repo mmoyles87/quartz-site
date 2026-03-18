@@ -1111,7 +1111,10 @@ export async function handlePluginInstallUnified({
       return ok
     })
     for (const ok of results) {
-      if (!ok) { failed++; installed-- }
+      if (!ok) {
+        failed++
+        installed--
+      }
     }
   }
 
@@ -1756,7 +1759,10 @@ export async function handlePluginStatus() {
       return ok
     })
     for (const ok of results) {
-      if (!ok) { failed++; installed-- }
+      if (!ok) {
+        failed++
+        installed--
+      }
     }
   }
 
