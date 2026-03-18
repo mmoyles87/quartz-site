@@ -273,7 +273,7 @@ export async function loadQuartzConfig(
     } catch (err) {
       console.error(
         styleText("red", `✗`) +
-          ` Failed to install plugin: ${styleText("yellow", entry.source)}\n` +
+          ` Failed to install plugin: ${styleText("yellow", formatSourceDisplay(entry.source))}\n` +
           `  ${err instanceof Error ? err.message : String(err)}`,
       )
     }
@@ -288,12 +288,12 @@ export async function loadQuartzConfig(
     try {
       const manifest = await getManifest(entry.source)
       if (manifest) {
-        manifests.set(entry.source, manifest)
+        manifests.set(sourceKey(entry.source), manifest)
       }
     } catch (err) {
       console.error(
         styleText("red", `✗`) +
-          ` Failed to load manifest: ${styleText("yellow", entry.source)}\n` +
+          ` Failed to load manifest: ${styleText("yellow", formatSourceDisplay(entry.source))}\n` +
           `  ${err instanceof Error ? err.message : String(err)}`,
       )
     }
