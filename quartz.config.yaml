@@ -1,0 +1,279 @@
+configuration:
+  pageTitle: Quartz 5
+  pageTitleSuffix: ""
+  enableSPA: true
+  enablePopovers: true
+  analytics:
+    provider: plausible
+  locale: en-US
+  baseUrl: quartz.jzhao.xyz
+  ignorePatterns:
+    - private
+    - templates
+    - .obsidian
+  theme:
+    fontOrigin: googleFonts
+    cdnCaching: true
+    typography:
+      header: Schibsted Grotesk
+      body: Source Sans Pro
+      code: IBM Plex Mono
+    colors:
+      lightMode:
+        light: "#faf8f8"
+        lightgray: "#e5e5e5"
+        gray: "#b8b8b8"
+        darkgray: "#4e4e4e"
+        dark: "#2b2b2b"
+        secondary: "#284b63"
+        tertiary: "#84a59d"
+        highlight: rgba(143, 159, 169, 0.15)
+        textHighlight: "#fff23688"
+      darkMode:
+        light: "#161618"
+        lightgray: "#393639"
+        gray: "#646464"
+        darkgray: "#d4d4d4"
+        dark: "#ebebec"
+        secondary: "#7b97aa"
+        tertiary: "#84a59d"
+        highlight: rgba(143, 159, 169, 0.15)
+        textHighlight: "#b3aa0288"
+plugins:
+  - source: ../created-modified-date
+    enabled: true
+    options:
+      defaultDateType: modified
+      priority:
+        - frontmatter
+        - git
+        - filesystem
+    order: 10
+  - source: ../syntax-highlighting
+    enabled: true
+    options:
+      theme:
+        light: github-light
+        dark: github-dark
+      keepBackground: false
+    order: 20
+  - source: ../obsidian-flavored-markdown
+    enabled: true
+    options:
+      enableInHtmlEmbed: false
+      enableCheckbox: true
+    order: 30
+  - source: ../github-flavored-markdown
+    enabled: true
+    order: 40
+  - source: ../table-of-contents
+    enabled: true
+    order: 50
+    layout:
+      position: right
+      priority: 30
+  - source: ../crawl-links
+    enabled: true
+    options:
+      markdownLinkResolution: shortest
+    order: 60
+  - source: ../description
+    enabled: true
+    order: 70
+  - source: ../latex
+    enabled: true
+    options:
+      renderEngine: katex
+    order: 80
+  - source: ../citations
+    enabled: false
+    order: 85
+  - source: ../hard-line-breaks
+    enabled: false
+    order: 90
+  - source: ../ox-hugo
+    enabled: false
+    order: 91
+  - source: ../roam
+    enabled: false
+    order: 92
+  - source: ../fonts
+    enabled: true
+  - source: ../remove-draft
+    enabled: true
+  - source: ../explicit-publish
+    enabled: false
+  - source: ../alias-redirects
+    enabled: true
+  - source: ../content-index
+    enabled: true
+    options:
+      enableSiteMap: true
+      enableRSS: true
+  - source: ../favicon
+    enabled: true
+  - source: ../og-image
+    enabled: true
+  - source: ../cname
+    enabled: true
+  - source: ../canvas-page
+    enabled: true
+  - source: ../content-page
+    enabled: true
+  - source: ../folder-page
+    enabled: true
+  - source: ../tag-page
+    enabled: true
+  - source: ../explorer
+    enabled: true
+    layout:
+      position: left
+      priority: 50
+  - source: ../graph
+    enabled: true
+    layout:
+      position: right
+      priority: 10
+  - source: ../search
+    enabled: true
+    layout:
+      position: left
+      priority: 20
+      group: toolbar
+      groupOptions:
+        grow: true
+  - source: ../backlinks
+    enabled: true
+    layout:
+      position: right
+      priority: 50
+  - source: ../article-title
+    enabled: true
+    layout:
+      position: beforeBody
+      priority: 10
+  - source: ../content-meta
+    enabled: true
+    layout:
+      position: beforeBody
+      priority: 20
+  - source: ../tag-list
+    enabled: false
+    layout:
+      position: beforeBody
+      priority: 30
+  - source: ../page-title
+    enabled: true
+    layout:
+      position: left
+      priority: 10
+  - source: ../darkmode
+    enabled: true
+    layout:
+      position: left
+      priority: 30
+      group: toolbar
+  - source: ../reader-mode
+    enabled: true
+    layout:
+      position: left
+      priority: 35
+      group: toolbar
+  - source: ../breadcrumbs
+    enabled: true
+    layout:
+      position: beforeBody
+      priority: 5
+      condition: not-index
+  - source: ../comments
+    enabled: false
+    options:
+      provider: giscus
+      options: {}
+    layout:
+      position: afterBody
+      priority: 10
+  - source: ../footer
+    enabled: true
+    options:
+      links:
+        GitHub: https://github.com/jackyzha0/quartz
+        Discord Community: https://discord.gg/cRFFHYye7t
+  - source: ../recent-notes
+    enabled: false
+  - source: ../spacer
+    enabled: true
+    options: {}
+    order: 25
+    layout:
+      position: left
+      priority: 25
+      display: mobile-only
+  - source: ../bases-page
+    enabled: true
+    options: {}
+    order: 50
+  - source: ../note-properties
+    enabled: true
+    options:
+      includeAll: false
+      includedProperties:
+        - description
+        - tags
+        - aliases
+      excludedProperties: []
+      hidePropertiesView: false
+      delimiters: ---
+      language: yaml
+    order: 5
+    layout:
+      position: beforeBody
+      priority: 15
+      display: all
+  - source: ../unlisted-pages
+    enabled: true
+    options: {}
+    order: 45
+  - source: ../encrypted-pages
+    enabled: true
+    options:
+      iterations: 600000
+      passwordField: password
+      unlistWhenEncrypted: false
+      outputPath: static/encryptedContentIndex.json
+    order: 900
+    layout:
+      position: body
+      priority: 100
+      display: all
+  - source: ../stacked-pages
+    enabled: false
+    layout:
+      position: afterBody
+      priority: 50
+      display: all
+layout:
+  groups:
+    toolbar:
+      priority: 35
+      direction: row
+      gap: 0.5rem
+  byPageType:
+    "404":
+      positions:
+        beforeBody: []
+        left: []
+        right: []
+    content: {}
+    folder:
+      exclude:
+        - reader-mode
+      positions:
+        right: []
+    tag:
+      exclude:
+        - reader-mode
+      positions:
+        right: []
+    canvas: {}
+    bases: {}
