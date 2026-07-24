@@ -36,7 +36,7 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config remote.template.url >&- || git remote add template https://github.com/quartz-themes/quartz-themes-preview-template.git
           git pull template v5 -X theirs --no-edit
-          git pull origin v4 -X theirs --no-edit
+          git pull origin v5 -X theirs --no-edit
           git push || git push --force
 
       # - name: Cache dependencies
