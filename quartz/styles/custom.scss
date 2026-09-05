@@ -1,3 +1,337 @@
+@use "sass:map";
 @use "./variables.scss" as *;
 
-// put your custom CSS here!
+// ===========================================================================
+// Local customisations for obsidian.arda.internal
+//
+// Goal: make the vault readable on an iPad, which lands in Quartz's "tablet"
+// range (820x1180 portrait, 1180x820 landscape) and therefore gets a 320px
+// sidebar hard-pinned to the grid with no way to dismiss it.
+//
+// Everything below is additive; nothing here changes the >1200px desktop
+// layout except the explicit sidebar-collapse feature at the bottom.
+// ===========================================================================
+
+// The "compact" range: everything below Quartz's desktop breakpoint. This
+// deliberately unifies phone and tablet onto one layout, because the tablet
+// grid (a permanent 320px column) is the thing that makes iPad unusable.
+$compact: "(max-width: #{map.get($breakpoints, desktop)})";
+$roomy: "(min-width: #{map.get($breakpoints, desktop)})";
+
+// Width of the slide-over explorer drawer in the compact range. Capped so a
+// 1180px landscape iPad doesn't get a full-screen takeover.
+$drawerWidth: min(400px, 85vw);
+
+// ---------------------------------------------------------------------------
+// Compact layout (phone + tablet/iPad)
+// ---------------------------------------------------------------------------
+@media all and #{$compact} {
+  // -- 1. Collapse the grid to a single column -----------------------------
+  // The tablet grid reserved a 320px left column on every page. Drop it: the
+  // explorer becomes a slide-over drawer instead of a permanent column.
+  .page > #quartz-body {
+    grid-template-columns: auto;
+    grid-template-rows: auto auto auto auto auto;
+    grid-template-areas:
+      "grid-sidebar-left"
+      "grid-header"
+      "grid-center"
+      "grid-sidebar-right"
+      "grid-footer";
+    column-gap: 5px;
+    row-gap: 5px;
+    margin: 0 auto;
+    padding: 0 1rem;
+  }
+
+  // The spacer component is tagged mobile-only in quartz.config.yaml; it needs
+  // to exist across the whole compact range to space out the top bar.
+  .mobile-only {
+    display: contents;
+    &.flex-component {
+      display: flex;
+    }
+  }
+  .desktop-only {
+    display: none;
+    &.flex-component {
+      display: none;
+    }
+  }
+
+  // -- 2. Left sidebar becomes a sticky top bar ----------------------------
+  // Note the #quartz-body prefix throughout this file: base.scss and the
+  // explorer plugin ship their own rules at the same class specificity, and
+  // they land in a separate stylesheet whose load order we don't control.
+  // The id makes these deterministic winners rather than order-dependent.
+  .page > #quartz-body .sidebar.left {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    height: unset;
+    gap: 0.5rem;
+    padding: 0.4rem 0;
+    flex-direction: row;
+    align-items: center;
+    background-color: var(--light);
+    border-bottom: 1px solid var(--lightgray);
+  }
+
+  // Keep the site title from crowding out the toolbar on a narrow phone.
+  .page > #quartz-body .sidebar.left .page-title {
+    margin: 0;
+    font-size: 1.1rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .page > #quartz-body .sidebar.left .flex-component {
+    margin-left: auto;
+  }
+
+  // -- 3. Explorer as a slide-over drawer ----------------------------------
+  // The explorer plugin decides it is in "mobile" mode by testing whether its
+  // hamburger button is visible (checkVisibility() in explorer.inline.ts), so
+  // revealing the button here is enough to switch its JS into drawer mode. No
+  // fork of the plugin is needed.
+  .page > #quartz-body .explorer button.mobile-explorer {
+    display: flex;
+  }
+  .page > #quartz-body .explorer button.desktop-explorer {
+    display: none;
+  }
+  .page > #quartz-body .explorer .mobile-explorer {
+    margin: 0;
+    padding: 5px;
+    z-index: 101;
+  }
+  .page > #quartz-body .explorer .mobile-explorer.hide-until-loaded {
+    display: none;
+  }
+
+  .page > #quartz-body .explorer {
+    order: -1;
+    flex: 0 0 auto;
+    height: initial;
+    align-self: center;
+    margin: 0;
+    overflow: visible;
+  }
+
+  .page > #quartz-body .explorer .explorer-content {
+    box-sizing: border-box;
+    // fixed, not absolute: the plugin anchors the drawer to the sticky sidebar,
+    // which moves as the top bar sticks. Anchor it to the viewport instead.
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 100;
+    width: $drawerWidth;
+    max-width: $drawerWidth;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin-top: 0;
+    padding: 4rem 1rem 2rem 1rem;
+    background-color: var(--light);
+    border-right: 1px solid var(--lightgray);
+    box-shadow: 4px 0 24px rgb(0 0 0 / 18%);
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition:
+      transform 220ms ease,
+      visibility 220ms ease;
+    overflow: hidden;
+  }
+
+  .page > #quartz-body .explorer:not(.collapsed) > .explorer-content {
+    transform: translateX(0);
+    visibility: visible;
+  }
+  .page > #quartz-body .explorer.collapsed > .explorer-content {
+    transform: translateX(-100%);
+    visibility: hidden;
+  }
+
+  // The file tree scrolls inside the drawer, not the page.
+  .page > #quartz-body .explorer .explorer-ul {
+    max-height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  // The plugin slides the entire page content off-screen when the drawer opens
+  // (transform: translateX(100dvw) on .lock-scroll). That made sense for a
+  // full-width phone drawer; with an overlay drawer it just hides the article.
+  // html prefix wins on specificity regardless of stylesheet order.
+  html .page > #quartz-body > :not(.sidebar.left:has(.explorer)),
+  html .page > #quartz-body.lock-scroll > :not(.sidebar.left:has(.explorer)) {
+    transform: none;
+    transition: none;
+  }
+
+  // Comfortable touch targets in the tree (44px is the Apple HIG minimum;
+  // 2.1rem plus the line box lands just over it).
+  .page > #quartz-body .explorer-content ul li > a {
+    display: inline-block;
+    padding: 0.35rem 0;
+    line-height: 1.35;
+  }
+  .page > #quartz-body .folder-container {
+    min-height: 2.1rem;
+  }
+
+  // -- 4. Right sidebar: collapsible sections ------------------------------
+  // Was a fixed ~286px-tall graph + backlinks row wedged above the footer on
+  // every page. Becomes stacked sections, collapsed by default, toggled by
+  // their own heading. The .qz-collapsible class is applied by custom.inline.ts.
+  .page > #quartz-body .sidebar.right {
+    position: static;
+    flex-direction: column;
+    height: unset;
+    width: 100%;
+    gap: 0;
+    margin: 1.5rem 0 0 0;
+    padding: 0;
+  }
+  .page > #quartz-body .sidebar.right > * {
+    flex: initial;
+    max-height: none;
+    width: 100%;
+  }
+
+  .page > #quartz-body .sidebar.right .qz-collapsible > h3 {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin: 0;
+    padding: 0.75rem 0;
+    border-top: 1px solid var(--lightgray);
+    cursor: pointer;
+    user-select: none;
+    min-height: 2.75rem;
+    box-sizing: border-box;
+  }
+  .page > #quartz-body .sidebar.right .qz-collapsible > h3::after {
+    content: "";
+    flex: 0 0 auto;
+    width: 0.5rem;
+    height: 0.5rem;
+    margin-right: 0.25rem;
+    border-right: 2px solid var(--gray);
+    border-bottom: 2px solid var(--gray);
+    transform: rotate(45deg) translate(-2px, -2px);
+    transition: transform 0.2s ease;
+  }
+  .page > #quartz-body .sidebar.right .qz-collapsible.qz-open > h3::after {
+    transform: rotate(-135deg) translate(-2px, -2px);
+  }
+  .page > #quartz-body .sidebar.right .qz-collapsible:not(.qz-open) > *:not(h3) {
+    display: none;
+  }
+  // The graph needs a real height once opened, or it renders as a 0px canvas.
+  .page > #quartz-body .sidebar.right .graph.qz-open .graph-outer {
+    height: 18rem;
+  }
+
+  // -- 5. Content fits the viewport ---------------------------------------
+  // min-width:0 lets the grid item actually shrink; without it the code blocks
+  // in the vault's assignment notes force the column wider than the screen.
+  .page > #quartz-body .center,
+  .page > #quartz-body .center > article {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .page > #quartz-body article pre,
+  .page > #quartz-body article table,
+  .page > #quartz-body article .table-container {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .page > #quartz-body article img {
+    height: auto;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Desktop (>1200px): collapsible sidebar
+// ---------------------------------------------------------------------------
+// The compact range gets the explorer drawer via the plugin's own hamburger, so
+// this button is hidden there — exactly one visible control at any width.
+// This default must precede the media query below: same specificity, so the
+// later rule wins.
+.qz-sidebar-toggle {
+  display: none;
+}
+
+// Desktop keeps its permanent column, but can now collapse it to a rail to
+// reclaim 320px for reading. Toggle button + persistence in custom.inline.ts.
+@media all and #{$roomy} {
+  .qz-sidebar-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: flex-start;
+    flex: 0 0 auto;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background-color: transparent;
+    color: var(--dark);
+    cursor: pointer;
+    opacity: 0.7;
+
+    &:hover {
+      background-color: var(--lightgray);
+      opacity: 1;
+    }
+  }
+
+  .page.qz-sidebar-collapsed > #quartz-body {
+    grid-template-columns: 3.5rem auto #{$sidePanelWidth};
+  }
+
+  // Hide everything in the rail except the toggle itself.
+  .page.qz-sidebar-collapsed > #quartz-body .sidebar.left > *:not(.qz-sidebar-toggle) {
+    display: none;
+  }
+  .page.qz-sidebar-collapsed > #quartz-body .sidebar.left {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+    align-items: center;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Drawer scrim (compact range only; element injected by custom.inline.ts)
+// ---------------------------------------------------------------------------
+.qz-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 99;
+  background-color: rgb(0 0 0 / 40%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms ease;
+}
+.qz-scrim.qz-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media all and #{$roomy} {
+  .qz-scrim {
+    display: none;
+  }
+}
+
+// Respect the OS "reduce motion" setting for everything added above.
+@media (prefers-reduced-motion: reduce) {
+  .page > #quartz-body .explorer .explorer-content,
+  .qz-scrim,
+  .page > #quartz-body .sidebar.right .qz-collapsible > h3::after {
+    transition: none;
+  }
+}

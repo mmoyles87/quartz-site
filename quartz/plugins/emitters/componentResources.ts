@@ -8,6 +8,8 @@ import spaRouterScript from "../../components/scripts/spa.inline"
 import popoverScript from "../../components/scripts/popover.inline"
 import baseStyles from "../../styles/base.scss"
 import customStyles from "../../styles/custom.scss"
+// @ts-ignore
+import customScript from "../../components/scripts/custom.inline"
 import popoverStyle from "../../components/styles/popover.scss"
 import { BuildCtx } from "../../util/ctx"
 import { QuartzComponent } from "../../components/types"
@@ -83,6 +85,9 @@ async function joinScripts(scripts: string[]): Promise<string> {
 
 function addGlobalPageResources(ctx: BuildCtx, componentResources: ComponentResources) {
   const cfg = ctx.cfg.configuration
+
+  // local customisations, JS twin of quartz/styles/custom.scss
+  componentResources.beforeDOMLoaded.push(customScript)
 
   // popovers
   if (cfg.enablePopovers) {
