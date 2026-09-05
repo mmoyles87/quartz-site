@@ -15,3 +15,6 @@ quartz/cli/tui/dist/
 public.new/
 public.prev/
 deploy.log
+
+# the vault is its own repo (matt/obsidian-main); never commit it here
+content/
