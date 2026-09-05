@@ -4,10 +4,11 @@ configuration:
   pageTitleSuffix: ""
   enableSPA: true
   enablePopovers: false
-  analytics:
-    provider: plausible
+  # LAN-only site: plausible.io is unreachable here and the request just
+  # stalls page load on every navigation.
+  analytics: null
   locale: en-US
-  baseUrl: obsidian.deathstar.lab
+  baseUrl: obsidian.arda.internal
   ignorePatterns:
     - private
     - templates
